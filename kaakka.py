@@ -1,4 +1,6 @@
+import json
 import math
+import os
 import random
 import time
 
@@ -169,6 +171,27 @@ def draw_bar(frame, x, y, w, h, frac, color, label):
     cv2.putText(frame, label, (x, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, WHITE, 2)
 
 
+# ======================= HIGH SCORE =======================
+# Saved next to this script, so it works no matter which folder you run from.
+HIGHSCORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "highscore.json")
+
+
+def load_highscore():
+    try:
+        with open(HIGHSCORE_FILE) as f:
+            return int(json.load(f)["best"])
+    except Exception:          # first run, or the file is broken: start from 0
+        return 0
+
+
+def save_highscore(best):
+    try:
+        with open(HIGHSCORE_FILE, "w") as f:
+            json.dump({"best": best}, f)
+    except Exception as e:     # can't save? keep playing anyway
+        print(f"[highscore] could not save ({e})")
+
+
 # ======================= GAME LOGIC =======================
 
 def new_game(waiting=True):
@@ -192,6 +215,7 @@ def spawn_crow(w, h, field_top, speed):
 
 
 game = new_game()
+best = load_highscore()
 prev_wrist_y = None
 flap_energy = 0.0
 arms_up_since = None   # when the player first raised both arms (None = arms down)
@@ -296,7 +320,10 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             if game["rice"] == 0:
                 game["over"] = True
                 game["over_at"] = t
-                play(SAD_SOUND)   # runs once: UPDATE is skipped once the game is over
+                play(SAD_SOUND)
+                if game["score"] > best:
+                    best = game["score"]
+                    save_highscore(best)   # runs once: UPDATE is skipped once the game is over
 
         for p in game["popups"]:
             p["y"] -= 1.5
@@ -325,6 +352,8 @@ with mp_pose.Pose(min_detection_confidence=0.5,
         # HUD
         cv2.putText(frame, f"Score: {game['score']}", (20, 40),
                     cv2.FONT_HERSHEY_DUPLEX, 1.0, WHITE, 2)
+        cv2.putText(frame, f"Best: {max(best, game['score'])}", (20, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, YELLOW, 2)
         draw_bar(frame, w - 220, 25, 200, 18, game["rice"] / 100, GREEN, "RICE")
         draw_bar(frame, w - 220, 70, 200, 12, flap_energy / (FLAP_THRESHOLD * 2),
                  YELLOW if flapping else (150, 150, 150), "FLAP")
@@ -348,7 +377,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
             cv2.putText(frame, "THE CROWS WON!", (w // 2 - 210, h // 2 - 30),
                         cv2.FONT_HERSHEY_DUPLEX, 1.6, RED, 3)
-            cv2.putText(frame, f"Score: {game['score']}",
+            cv2.putText(frame, f"Score: {game['score']}   Best: {best}",
                         (w // 2 - 210, h // 2 + 30), cv2.FONT_HERSHEY_DUPLEX, 0.9, WHITE, 2)
             cv2.putText(frame, "Raise both arms (or press R) to replay",
                         (w // 2 - 210, h // 2 + 70), cv2.FONT_HERSHEY_DUPLEX, 0.7, WHITE, 2)
@@ -356,6 +385,8 @@ with mp_pose.Pose(min_detection_confidence=0.5,
         cv2.imshow("Kaakka Shoo!", frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
+            if game["score"] > best:     # don't lose a record by quitting mid-game
+                save_highscore(game["score"])
             break
         if key == ord('r'):
             game = new_game(waiting=False)   # R jumps straight back into play
