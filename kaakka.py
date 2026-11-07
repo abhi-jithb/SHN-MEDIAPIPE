@@ -21,6 +21,9 @@ SCARE_HALF_WIDTH = 0.22   # scare zone = this fraction of screen width each side
 RICE_EAT_RATE = 0.06      # rice lost per eating crow per frame
 ARMS_UP_HOLD = 0.5        # seconds both arms must stay up to start / restart
 RESTART_DELAY = 2.0       # after game over, ignore the arms-up gesture this long
+COMBO_WINDOW = 1.0        # scares within this many seconds chain into a combo
+LOW_RICE = 25             # below this % of rice the screen shakes as a warning
+SHAKE_TIME = 0.6          # how long (seconds) the low-rice shake lasts
 
 # Colors are BGR in OpenCV, not RGB!
 WHITE = (255, 255, 255)
@@ -199,7 +202,11 @@ def new_game(waiting=True):
     now = time.time()
     return {"crows": [], "popups": [], "score": 0, "rice": 100.0,
             "start": now, "last_spawn": now, "over": False, "over_at": 0.0,
-            "waiting": waiting}
+            "waiting": waiting,
+            "scare_times": [],     # when recent crows were scared (for combos)
+            "combo": None,         # big "COMBO xN!" banner currently on screen
+            "warned": False,       # has the low-rice warning already fired?
+            "shake_until": 0.0}
 
 
 def spawn_crow(w, h, field_top, speed):
@@ -312,11 +319,23 @@ with mp_pose.Pose(min_detection_confidence=0.5,
                                            "text": random.choice(SHOUTS), "ttl": 25})
                     caw()
 
+                    # COMBO: count scares in the last COMBO_WINDOW seconds
+                    game["scare_times"].append(t)
+                    game["scare_times"] = [s for s in game["scare_times"]
+                                           if t - s < COMBO_WINDOW]
+                    combo = len(game["scare_times"])
+                    if combo >= 2:
+                        game["score"] += combo - 1          # bigger combo, bigger bonus
+                        game["combo"] = {"n": combo, "ttl": 40}
+
             # forget crows that left the screen
             game["crows"] = [c for c in game["crows"]
                              if -120 < c["x"] < w + 120 and c["y"] > -100]
 
             game["rice"] = max(0.0, game["rice"])
+            if game["rice"] < LOW_RICE and not game["warned"]:   # fire once per game
+                game["warned"] = True
+                game["shake_until"] = t + SHAKE_TIME
             if game["rice"] == 0:
                 game["over"] = True
                 game["over_at"] = t
@@ -329,6 +348,10 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             p["y"] -= 1.5
             p["ttl"] -= 1
         game["popups"] = [p for p in game["popups"] if p["ttl"] > 0]
+        if game["combo"]:
+            game["combo"]["ttl"] -= 1
+            if game["combo"]["ttl"] <= 0:
+                game["combo"] = None
 
         # ---------- 3. DRAW ----------
         # scare zone: a translucent band around the player while flapping
@@ -348,6 +371,19 @@ with mp_pose.Pose(min_detection_confidence=0.5,
                         cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 0, 0), 5)
             cv2.putText(frame, p["text"], (int(p["x"]) - 30, int(p["y"])),
                         cv2.FONT_HERSHEY_DUPLEX, 1.0, YELLOW, 2)
+        if game["combo"]:
+            text = f"COMBO x{game['combo']['n']}!"
+            cv2.putText(frame, text, (w // 2 - 130, 90), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0, 0, 0), 7)
+            cv2.putText(frame, text, (w // 2 - 130, 90), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0, 140, 255), 3)
+
+        # LOW RICE warning: shake the picture and flash it red for a moment
+        if t < game["shake_until"]:
+            dx, dy = random.randint(-12, 12), random.randint(-12, 12)
+            frame = np.roll(frame, (dy, dx), axis=(0, 1))
+            if int(t * 10) % 2:                       # flash on/off 5 times a second
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (0, 0), (w, h), RED, -1)
+                cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
 
         # HUD
         cv2.putText(frame, f"Score: {game['score']}", (20, 40),
