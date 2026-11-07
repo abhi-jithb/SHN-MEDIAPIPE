@@ -24,6 +24,9 @@ RESTART_DELAY = 2.0       # after game over, ignore the arms-up gesture this lon
 COMBO_WINDOW = 1.0        # scares within this many seconds chain into a combo
 LOW_RICE = 25             # below this % of rice the screen shakes as a warning
 SHAKE_TIME = 0.6          # how long (seconds) the low-rice shake lasts
+GOLDEN_CHANCE = 0.08      # chance that a new crow is a rare golden crow (0.08 = 8%)
+GOLDEN_SPEED = 1.6        # golden crows fly this many times faster
+GOLDEN_POINTS = 5         # points for scaring a golden crow
 
 # Colors are BGR in OpenCV, not RGB!
 WHITE = (255, 255, 255)
@@ -35,6 +38,9 @@ MUD = (40, 80, 110)
 CROW_BODY = (28, 24, 24)
 CROW_WING = (50, 42, 42)
 CROW_SHEEN = (120, 90, 80)   # bluish edge so the crow stands out on dark backgrounds
+GOLD_BODY = (0, 170, 230)
+GOLD_WING = (20, 200, 255)
+GOLD_SHEEN = (150, 245, 255)
 
 SHOUTS = ["KAA!", "SHOO!", "POYI!", "KAA KAA!"]
 
@@ -112,6 +118,10 @@ def draw_crow(frame, crow, t):
     """Side-view crow. `facing` = 1 looks right, -1 looks left."""
     x, y, f = crow["x"], crow["y"], crow["facing"]
     peck = 0
+    if crow["golden"]:
+        body, wing_color, sheen = GOLD_BODY, GOLD_WING, GOLD_SHEEN
+    else:
+        body, wing_color, sheen = CROW_BODY, CROW_WING, CROW_SHEEN
 
     if crow["state"] == "eating":
         wing = 0.12                                    # wings folded
@@ -138,10 +148,10 @@ def draw_crow(frame, crow, t):
             cv2.line(frame, P(lx, 8), P(lx - 2, 20), (60, 60, 60), 2)
 
     # tail feathers, then body, then neck + head
-    poly([(-20, -4), (-46, -12), (-50, -2), (-46, 6), (-20, 6)], CROW_BODY, CROW_SHEEN)
-    cv2.ellipse(frame, P(0, 0), (27, 13), 0, 0, 360, CROW_BODY, -1)
-    poly([(14, -8), (22, -14 + peck), (26, -4 + peck), (14, 6)], CROW_BODY)
-    cv2.circle(frame, P(25, -10 + peck), 11, CROW_BODY, -1)
+    poly([(-20, -4), (-46, -12), (-50, -2), (-46, 6), (-20, 6)], body, sheen)
+    cv2.ellipse(frame, P(0, 0), (27, 13), 0, 0, 360, body, -1)
+    poly([(14, -8), (22, -14 + peck), (26, -4 + peck), (14, 6)], body)
+    cv2.circle(frame, P(25, -10 + peck), 11, body, -1)
 
     # thick dark beak (real crows have black beaks, not yellow!)
     poly([(32, -14 + peck), (50, -7 + peck), (32, -3 + peck)], (55, 55, 55), (110, 110, 110))
@@ -153,7 +163,7 @@ def draw_crow(frame, crow, t):
     # wing: tip goes up when wing > 0 and down when wing < 0
     lift = -44 * wing
     poly([(12, -4), (-2, -4 + lift), (-14, -2 + lift * 0.8),
-          (-24, -2 + lift * 0.55), (-16, 0)], CROW_WING, CROW_SHEEN)
+          (-24, -2 + lift * 0.55), (-16, 0)], wing_color, sheen)
 
 
 def draw_field(frame, field_top, w, h, rice):
@@ -211,6 +221,9 @@ def new_game(waiting=True):
 
 def spawn_crow(w, h, field_top, speed):
     """Crow enters from a random side and flies toward a random spot on the field."""
+    golden = random.random() < GOLDEN_CHANCE
+    if golden:
+        speed *= GOLDEN_SPEED
     x = random.choice([-60, w + 60])
     y = random.uniform(0.08 * h, 0.35 * h)
     tx, ty = random.uniform(60, w - 60), field_top - 20
@@ -218,7 +231,7 @@ def spawn_crow(w, h, field_top, speed):
     return {"x": x, "y": y, "ty": ty,
             "vx": (tx - x) / dist * speed, "vy": (ty - y) / dist * speed,
             "facing": 1 if tx > x else -1,
-            "state": "flying", "seed": random.random() * 10}
+            "state": "flying", "seed": random.random() * 10, "golden": golden}
 
 
 game = new_game()
@@ -311,12 +324,17 @@ with mp_pose.Pose(min_detection_confidence=0.5,
                 # SHOO! crows near the flapping farmer panic and flee
                 if (flapping and crow["state"] != "fleeing"
                         and abs(crow["x"] - player_x) < SCARE_HALF_WIDTH * w):
-                    game["score"] += 2 if crow["state"] == "eating" else 1
+                    if crow["golden"]:
+                        game["score"] += GOLDEN_POINTS
+                        shout = f"GOLD +{GOLDEN_POINTS}!"
+                    else:
+                        game["score"] += 2 if crow["state"] == "eating" else 1
+                        shout = random.choice(SHOUTS)
                     crow["facing"] = 1 if crow["x"] > player_x else -1
                     crow["vx"], crow["vy"] = crow["facing"] * 10, -8
                     crow["state"] = "fleeing"
                     game["popups"].append({"x": crow["x"], "y": crow["y"] - 30,
-                                           "text": random.choice(SHOUTS), "ttl": 25})
+                                           "text": shout, "ttl": 25})
                     caw()
 
                     # COMBO: count scares in the last COMBO_WINDOW seconds
