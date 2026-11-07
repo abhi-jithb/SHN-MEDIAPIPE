@@ -32,6 +32,73 @@ CROW_SHEEN = (120, 90, 80)   # bluish edge so the crow stands out on dark backgr
 SHOUTS = ["KAA!", "SHOO!", "POYI!", "KAA KAA!"]
 
 
+# ======================= SOUND =======================
+# All sounds are generated with numpy (no audio files). sd.play() returns
+# immediately and plays in a background thread, so the video loop never waits.
+# If audio can't start (no PortAudio, no output device...), we just stay silent.
+
+SAMPLE_RATE = 44100
+CAW_COOLDOWN = 0.25   # seconds; stops a whole flock from caw-spamming in one frame
+
+try:
+    import sounddevice as sd
+    sd.query_devices(kind="output")   # raises if there is no usable output device
+except Exception as e:
+    sd = None
+    print(f"[sound] audio disabled ({e}); playing silently.")
+
+
+def make_caw():
+    """Harsh 'KAA!': a buzzy sawtooth sliding down in pitch, plus a bit of rasp."""
+    dur = 0.28
+    t = np.linspace(0, dur, int(SAMPLE_RATE * dur), endpoint=False)
+    freq = 750 - 350 * (t / dur) + 25 * np.sin(2 * np.pi * 30 * t)   # slide down + wobble
+    phase = 2 * np.cumsum(freq) / SAMPLE_RATE * np.pi
+    saw = 2 * ((phase / (2 * np.pi)) % 1.0) - 1                      # sawtooth = buzzy
+    rasp = np.random.uniform(-1, 1, t.size) * 0.35                   # throaty noise
+    env = np.minimum(t / 0.02, 1) * np.exp(-t * 6)                   # quick attack, fade out
+    return (0.35 * (saw + rasp) * env).astype(np.float32)
+
+
+def make_sad():
+    """Game-over 'wah wah wah waaah': four falling notes, the last one wobbles."""
+    notes = [(392, 0.35), (370, 0.35), (349, 0.35), (330, 1.0)]
+    parts = []
+    for i, (f, dur) in enumerate(notes):
+        t = np.linspace(0, dur, int(SAMPLE_RATE * dur), endpoint=False)
+        vib = 6 * np.sin(2 * np.pi * 5 * t) if i == len(notes) - 1 else 0
+        phase = 2 * np.pi * np.cumsum(f + vib) / SAMPLE_RATE
+        tone = np.sin(phase) + 0.4 * np.sin(2 * phase) + 0.2 * np.sin(3 * phase)  # brassy
+        env = np.minimum(t / 0.03, 1) * np.minimum((dur - t) / 0.08, 1)        # no clicks
+        parts.append(tone * env)
+    return (0.25 * np.concatenate(parts)).astype(np.float32)
+
+
+CAW_SOUND = make_caw()
+SAD_SOUND = make_sad()
+last_caw = 0.0
+
+
+def play(sound):
+    """Fire-and-forget playback. Never raises, never blocks."""
+    global sd
+    if sd is None:
+        return
+    try:
+        sd.play(sound, SAMPLE_RATE)
+    except Exception as e:
+        print(f"[sound] playback failed ({e}); disabling audio.")
+        sd = None
+
+
+def caw():
+    global last_caw
+    now = time.time()
+    if now - last_caw > CAW_COOLDOWN:
+        last_caw = now
+        play(CAW_SOUND)
+
+
 # ======================= DRAWING =======================
 
 def draw_crow(frame, crow, t):
@@ -192,6 +259,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
                     crow["state"] = "fleeing"
                     game["popups"].append({"x": crow["x"], "y": crow["y"] - 30,
                                            "text": random.choice(SHOUTS), "ttl": 25})
+                    caw()
 
             # forget crows that left the screen
             game["crows"] = [c for c in game["crows"]
@@ -200,6 +268,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             game["rice"] = max(0.0, game["rice"])
             if game["rice"] == 0:
                 game["over"] = True
+                play(SAD_SOUND)   # runs once: UPDATE is skipped once the game is over
 
         for p in game["popups"]:
             p["y"] -= 1.5
