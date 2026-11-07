@@ -17,6 +17,8 @@ L_WRIST, R_WRIST = 15, 16
 FLAP_THRESHOLD = 0.02     # how hard you must flap (watch the FLAP meter)
 SCARE_HALF_WIDTH = 0.22   # scare zone = this fraction of screen width each side of you
 RICE_EAT_RATE = 0.06      # rice lost per eating crow per frame
+ARMS_UP_HOLD = 0.5        # seconds both arms must stay up to start / restart
+RESTART_DELAY = 2.0       # after game over, ignore the arms-up gesture this long
 
 # Colors are BGR in OpenCV, not RGB!
 WHITE = (255, 255, 255)
@@ -169,10 +171,12 @@ def draw_bar(frame, x, y, w, h, frac, color, label):
 
 # ======================= GAME LOGIC =======================
 
-def new_game():
+def new_game(waiting=True):
+    """waiting=True shows the start screen until the player raises both arms."""
     now = time.time()
     return {"crows": [], "popups": [], "score": 0, "rice": 100.0,
-            "start": now, "last_spawn": now, "over": False}
+            "start": now, "last_spawn": now, "over": False, "over_at": 0.0,
+            "waiting": waiting}
 
 
 def spawn_crow(w, h, field_top, speed):
@@ -190,6 +194,7 @@ def spawn_crow(w, h, field_top, speed):
 game = new_game()
 prev_wrist_y = None
 flap_energy = 0.0
+arms_up_since = None   # when the player first raised both arms (None = arms down)
 
 cap = cv2.VideoCapture(0)
 
@@ -210,6 +215,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
         # ---------- 1. SENSE ----------
         results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         player_x = None
+        arms_up = False
         if results.pose_landmarks:
             mp_draw.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             lm = results.pose_landmarks.landmark
@@ -223,14 +229,35 @@ with mp_pose.Pose(min_detection_confidence=0.5,
                 dy = abs(wrist_y - prev_wrist_y)
                 flap_energy = 0.7 * flap_energy + 0.3 * dy   # smooth out jitter
             prev_wrist_y = wrist_y
+
+            # both arms up? (y grows DOWNWARD in images, so "above" = smaller y)
+            arms_up = (lm[L_WRIST].y < lm[L_SHOULDER].y and
+                       lm[R_WRIST].y < lm[R_SHOULDER].y)
         else:
             prev_wrist_y = None
             flap_energy *= 0.8
 
         flapping = flap_energy > FLAP_THRESHOLD and player_x is not None
 
+        # arms must stay up for ARMS_UP_HOLD seconds, so a quick flap doesn't count
+        if arms_up:
+            if arms_up_since is None:
+                arms_up_since = t
+        else:
+            arms_up_since = None
+        arms_up_held = arms_up_since is not None and t - arms_up_since > ARMS_UP_HOLD
+
         # ---------- 2. UPDATE ----------
-        if not game["over"]:
+        if game["waiting"]:
+            if arms_up_held:                  # start! reset the clock so difficulty starts low
+                game["waiting"] = False
+                game["start"] = game["last_spawn"] = t
+                arms_up_since = None
+        elif game["over"]:
+            if arms_up_held and t - game["over_at"] > RESTART_DELAY:
+                game = new_game(waiting=False)
+                arms_up_since = None
+        else:
             speed = min(3 + elapsed * 0.05, 9)               # crows get faster...
             interval = max(0.5, 2.2 - elapsed * 0.03)        # ...and come more often
             if t - game["last_spawn"] > interval:
@@ -268,6 +295,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             game["rice"] = max(0.0, game["rice"])
             if game["rice"] == 0:
                 game["over"] = True
+                game["over_at"] = t
                 play(SAD_SOUND)   # runs once: UPDATE is skipped once the game is over
 
         for p in game["popups"]:
@@ -305,21 +333,32 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             cv2.putText(frame, "Step into the frame, farmer!", (20, 80),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, RED, 2)
 
+        if game["waiting"]:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+            cv2.putText(frame, "KAAKKA SHOO!", (w // 2 - 180, h // 2 - 40),
+                        cv2.FONT_HERSHEY_DUPLEX, 1.6, YELLOW, 3)
+            cv2.putText(frame, "Raise both arms to start", (w // 2 - 200, h // 2 + 20),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.9, WHITE, 2)
+
         if game["over"]:
             overlay = frame.copy()
             cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
             cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
             cv2.putText(frame, "THE CROWS WON!", (w // 2 - 210, h // 2 - 30),
                         cv2.FONT_HERSHEY_DUPLEX, 1.6, RED, 3)
-            cv2.putText(frame, f"Score: {game['score']}   Press R to replay",
+            cv2.putText(frame, f"Score: {game['score']}",
                         (w // 2 - 210, h // 2 + 30), cv2.FONT_HERSHEY_DUPLEX, 0.9, WHITE, 2)
+            cv2.putText(frame, "Raise both arms (or press R) to replay",
+                        (w // 2 - 210, h // 2 + 70), cv2.FONT_HERSHEY_DUPLEX, 0.7, WHITE, 2)
 
         cv2.imshow("Kaakka Shoo!", frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
         if key == ord('r'):
-            game = new_game()
+            game = new_game(waiting=False)   # R jumps straight back into play
 
 cap.release()
 cv2.destroyAllWindows()
