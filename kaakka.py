@@ -15,18 +15,36 @@ mp_draw = mp.solutions.drawing_utils
 L_SHOULDER, R_SHOULDER = 11, 12
 L_WRIST, R_WRIST = 15, 16
 
-# ---- Tuning knobs: play with these! ----
-FLAP_THRESHOLD = 0.02     # how hard you must flap (watch the FLAP meter)
+# ================== TUNING KNOBS: play with these! ==================
+# Flap detection (watch the FLAP meter on screen while you tune these)
+FLAP_THRESHOLD = 0.02     # how hard you must flap; lower = easier to scare crows
+FLAP_SMOOTHING = 0.7      # 0..1, higher = smoother but slower-reacting flap meter
 SCARE_HALF_WIDTH = 0.22   # scare zone = this fraction of screen width each side of you
-RICE_EAT_RATE = 0.06      # rice lost per eating crow per frame
+
+# Difficulty: crows get faster and come more often as time passes
+START_SPEED = 3           # crow speed (pixels per frame) at the start
+MAX_SPEED = 9             # crows never get faster than this
+SPEED_RAMP = 0.05         # speed added per second of play
+START_INTERVAL = 2.2      # seconds between new crows at the start
+MIN_INTERVAL = 0.5        # crows never come more often than this
+INTERVAL_RAMP = 0.03      # seconds shaved off the interval per second of play
+FLEE_SPEED = 10           # how fast a scared crow flies away
+RICE_EAT_RATE = 0.06      # rice % lost per eating crow per frame
+
+# Start / restart gesture
 ARMS_UP_HOLD = 0.5        # seconds both arms must stay up to start / restart
 RESTART_DELAY = 2.0       # after game over, ignore the arms-up gesture this long
+
+# Combos, warnings and golden crows
 COMBO_WINDOW = 1.0        # scares within this many seconds chain into a combo
 LOW_RICE = 25             # below this % of rice the screen shakes as a warning
 SHAKE_TIME = 0.6          # how long (seconds) the low-rice shake lasts
 GOLDEN_CHANCE = 0.08      # chance that a new crow is a rare golden crow (0.08 = 8%)
 GOLDEN_SPEED = 1.6        # golden crows fly this many times faster
 GOLDEN_POINTS = 5         # points for scaring a golden crow
+
+# Sound
+CAW_COOLDOWN = 0.25       # seconds between caws, so a flock doesn't caw-spam
 
 # Colors are BGR in OpenCV, not RGB!
 WHITE = (255, 255, 255)
@@ -51,7 +69,6 @@ SHOUTS = ["KAA!", "SHOO!", "POYI!", "KAA KAA!"]
 # If audio can't start (no PortAudio, no output device...), we just stay silent.
 
 SAMPLE_RATE = 44100
-CAW_COOLDOWN = 0.25   # seconds; stops a whole flock from caw-spamming in one frame
 
 try:
     import sounddevice as sd
@@ -271,7 +288,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             wrist_y = (lm[L_WRIST].y + lm[R_WRIST].y) / 2
             if prev_wrist_y is not None:
                 dy = abs(wrist_y - prev_wrist_y)
-                flap_energy = 0.7 * flap_energy + 0.3 * dy   # smooth out jitter
+                flap_energy = FLAP_SMOOTHING * flap_energy + (1 - FLAP_SMOOTHING) * dy   # smooth jitter
             prev_wrist_y = wrist_y
 
             # both arms up? (y grows DOWNWARD in images, so "above" = smaller y)
@@ -302,8 +319,8 @@ with mp_pose.Pose(min_detection_confidence=0.5,
                 game = new_game(waiting=False)
                 arms_up_since = None
         else:
-            speed = min(3 + elapsed * 0.05, 9)               # crows get faster...
-            interval = max(0.5, 2.2 - elapsed * 0.03)        # ...and come more often
+            speed = min(START_SPEED + elapsed * SPEED_RAMP, MAX_SPEED)           # faster...
+            interval = max(MIN_INTERVAL, START_INTERVAL - elapsed * INTERVAL_RAMP)  # ...and more often
             if t - game["last_spawn"] > interval:
                 game["crows"].append(spawn_crow(w, h, field_top, speed))
                 game["last_spawn"] = t
@@ -331,7 +348,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
                         game["score"] += 2 if crow["state"] == "eating" else 1
                         shout = random.choice(SHOUTS)
                     crow["facing"] = 1 if crow["x"] > player_x else -1
-                    crow["vx"], crow["vy"] = crow["facing"] * 10, -8
+                    crow["vx"], crow["vy"] = crow["facing"] * FLEE_SPEED, -0.8 * FLEE_SPEED
                     crow["state"] = "fleeing"
                     game["popups"].append({"x": crow["x"], "y": crow["y"] - 30,
                                            "text": shout, "ttl": 25})
